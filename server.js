@@ -86,17 +86,12 @@ function pathToTable(p) {
 function rowToFirebase(row, table) {
   if (!row) return null;
   if (table === 'dashboard_accounts') {
-    const base = {
+    return {
       id: row.id, email: row.email, password: row.password, role: row.role,
       name: row.name, status: row.status,
       createdAt: row.created_at, updatedAt: row.updated_at,
       lastLoginAt: row.last_login_at, forceLogoutAt: row.force_logout_at || 0
     };
-    if (row.data && typeof row.data === 'object') {
-      const expanded = expandSlashKeys(row.data);
-      Object.assign(base, expanded);
-    }
-    return base;
   }
   if (table === 'customers') {
     const base = {
@@ -132,7 +127,6 @@ function rowToFirebase(row, table) {
 function firebaseToRow(data, table) {
   if (table === 'dashboard_accounts') {
     const row = {};
-    const knownAdminFields = ['id','email','password','role','name','status','createdAt','updatedAt','lastLoginAt','forceLogoutAt'];
     if (data.id !== undefined) row.id = data.id;
     if (data.email !== undefined) row.email = data.email;
     if (data.password !== undefined) row.password = data.password;
@@ -143,11 +137,6 @@ function firebaseToRow(data, table) {
     if (data.updatedAt !== undefined) row.updated_at = data.updatedAt;
     if (data.lastLoginAt !== undefined) row.last_login_at = data.lastLoginAt;
     if (data.forceLogoutAt !== undefined) row.force_logout_at = data.forceLogoutAt;
-    const extra = {};
-    for (const [k, v] of Object.entries(data)) {
-      if (!knownAdminFields.includes(k)) extra[k] = v;
-    }
-    if (Object.keys(extra).length) row.data = deepMerge(row.data || {}, extra);
     return row;
   }
   if (table === 'customers') {
@@ -191,7 +180,9 @@ async function rtdbRead(rawPath) {
       const { data, error } = await supabase.from(table).select('*');
       if (error || !data || !data.length) return null;
       const result = {};
-      for (const row of data) result[row.key] = row.value;
+      for (const row of data) {
+        if (!row.key.startsWith('_da|')) result[row.key] = row.value;
+      }
       return result;
     }
     const { data, error } = await supabase.from(table).select('*');
@@ -200,6 +191,31 @@ async function rtdbRead(rawPath) {
     for (const row of data) {
       result[row.id] = rowToFirebase(row, table);
     }
+
+    // Merge extra fields from settings for dashboard_accounts
+    if (table === 'dashboard_accounts') {
+      const { data: extras } = await supabase.from('settings').select('*').like('key', '_da|%');
+      if (extras) {
+        for (const srow of extras) {
+          const pipeIdx1 = srow.key.indexOf('|');
+          const pipeIdx2 = srow.key.indexOf('|', pipeIdx1 + 1);
+          if (pipeIdx1 >= 0 && pipeIdx2 > pipeIdx1) {
+            const adminId = srow.key.substring(pipeIdx1 + 1, pipeIdx2);
+            const subKey = srow.key.substring(pipeIdx2 + 1);
+            if (result[adminId]) {
+              const subParts = subKey.split('/');
+              let cur = result[adminId];
+              for (let i = 0; i < subParts.length - 1; i++) {
+                if (!cur[subParts[i]] || typeof cur[subParts[i]] !== 'object') cur[subParts[i]] = {};
+                cur = cur[subParts[i]];
+              }
+              cur[subParts[subParts.length - 1]] = srow.value;
+            }
+          }
+        }
+      }
+    }
+
     return result;
   }
 
@@ -213,6 +229,25 @@ async function rtdbRead(rawPath) {
     const { data, error } = await supabase.from(table).select('*').eq('id', id).single();
     if (error || !data) return null;
     const fbData = rowToFirebase(data, table);
+
+    // Merge extra fields from settings for dashboard_accounts
+    if (table === 'dashboard_accounts') {
+      const prefix = `_da|${id}|`;
+      const { data: extras } = await supabase.from('settings').select('*').like('key', prefix + '%');
+      if (extras) {
+        for (const row of extras) {
+          const subKey = row.key.substring(prefix.length);
+          const subParts = subKey.split('/');
+          let cur = fbData;
+          for (let i = 0; i < subParts.length - 1; i++) {
+            if (!cur[subParts[i]] || typeof cur[subParts[i]] !== 'object') cur[subParts[i]] = {};
+            cur = cur[subParts[i]];
+          }
+          cur[subParts[subParts.length - 1]] = row.value;
+        }
+      }
+    }
+
     if (parts.length > 2) {
       let cur = fbData;
       for (let i = 2; i < parts.length; i++) {
@@ -234,6 +269,16 @@ async function rtdbSet(rawPath, value) {
 
   if (value === null || value === undefined) {
     return rtdbRemove(rawPath);
+  }
+
+  // Store nested dashboard_accounts extra fields (like presence) in settings
+  if (table === 'dashboard_accounts' && parts.length > 2) {
+    const id = parts[1];
+    const subPath = parts.slice(2).join('/');
+    const settingsKey = `_da|${id}|${subPath}`;
+    const { error } = await supabase.from('settings').upsert({ key: settingsKey, value, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+    if (error) throw error;
+    return;
   }
 
   if (parts.length < 2) return;
@@ -301,6 +346,36 @@ async function rtdbUpdate(rawPath, updates) {
     return;
   }
 
+  // For dashboard_accounts, separate known fields from extra fields
+  if (table === 'dashboard_accounts') {
+    const knownAdminFields = ['id','email','password','role','name','status','createdAt','updatedAt','lastLoginAt','forceLogoutAt'];
+    const knownUpdates = {};
+    const extraUpdates = {};
+    for (const [k, v] of Object.entries(expanded)) {
+      if (knownAdminFields.includes(k)) {
+        knownUpdates[k] = v;
+      } else {
+        extraUpdates[k] = v;
+      }
+    }
+    // Update known fields in dashboard_accounts table
+    if (Object.keys(knownUpdates).length) {
+      const { data: existing } = await supabase.from(table).select('*').eq('id', id).single();
+      const fbData = existing ? rowToFirebase(existing, table) : { id };
+      Object.assign(fbData, knownUpdates);
+      const row = firebaseToRow(fbData, table);
+      row.id = id;
+      const { error } = await supabase.from(table).upsert(row, { onConflict: 'id' });
+      if (error) throw error;
+    }
+    // Store extra fields in settings
+    for (const [k, v] of Object.entries(extraUpdates)) {
+      const settingsKey = `_da|${id}|${k}`;
+      await supabase.from('settings').upsert({ key: settingsKey, value: v, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+    }
+    return;
+  }
+
   const { data: existing } = await supabase.from(table).select('*').eq('id', id).single();
   const fbData = existing ? rowToFirebase(existing, table) : { id };
 
@@ -310,7 +385,6 @@ async function rtdbUpdate(rawPath, updates) {
       if (!cur[parts[i]] || typeof cur[parts[i]] !== 'object') cur[parts[i]] = {};
       cur = cur[parts[i]];
     }
-    deepMerge(cur, expanded);
     Object.assign(cur, expanded);
   } else {
     for (const [k, v] of Object.entries(expanded)) {
