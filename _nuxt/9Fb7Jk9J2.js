@@ -1,0 +1,1 @@
+import{A as e,U as t,V as n,w as r}from"./CgQDX6Jx.js";import{n as i}from"./CPbJ_shX.js";import{t as a}from"./BDNMzG2s.js";import{t as o}from"./DiJoTZ7X.js";var s={class:`trap-page-root`},c=a(e({__name:`verify-bot-security-check`,setup(e){return i({title:``}),n(()=>{o(`crawler_direct_hit`)}),(e,n)=>(t(),r(`div`,s))}}),[[`__scopeId`,`data-v-406398ab`]]);export{c as default};
