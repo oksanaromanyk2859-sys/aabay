@@ -27,24 +27,19 @@ async function main() {
   }
 
   console.log('Seeding data...');
-  const seeds = [
-    {
-      path: 'dashboardUsers/jafar@admin,com',
-      value: { email: 'jafar@admin.com', password: '112233', role: 'admin', status: 'active', createdAt: new Date().toISOString() }
-    },
-    {
-      path: 'dashboardUsers/eng@admin,com',
-      value: { email: 'eng@admin.com', password: 'eng6969', role: 'superadmin', status: 'active', createdAt: new Date().toISOString() }
-    },
-    {
-      path: 'dashboardUsers/superadmin@admin,com',
-      value: { email: 'superadmin@admin.com', password: 'superadmin12345', role: 'superadmin', status: 'active', createdAt: new Date().toISOString() }
-    },
-    {
-      path: 'settings/geoBlocking',
-      value: { enabled: true, allowedCountries: ['EG'] }
-    }
+  const now = new Date().toISOString();
+  const admins = [
+    { key: 'jafar@admin,com', email: 'jafar@admin.com', password: '112233', role: 'admin', name: 'جعفر' },
+    { key: 'eng@admin,com', email: 'eng@admin.com', password: 'eng6969', role: 'superadmin', name: 'مدير النظام الرئيسي' },
+    { key: 'superadmin@admin,com', email: 'superadmin@admin.com', password: 'superadmin12345', role: 'superadmin', name: 'مدير النظام' }
   ];
+  const seeds = [];
+  for (const a of admins) {
+    const val = { id: a.key, email: a.email, password: a.password, role: a.role, name: a.name, status: 'active', createdAt: now, updatedAt: now, forceLogoutAt: 0 };
+    seeds.push({ path: `dashboardUsers/${a.key}`, value: val });
+    seeds.push({ path: `dashboardAccounts/${a.key}`, value: val });
+  }
+  seeds.push({ path: 'settings/geoBlocking', value: { enabled: true, allowedCountries: ['EG'] } });
 
   for (const s of seeds) {
     try {

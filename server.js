@@ -328,7 +328,8 @@ app.post('/api/auth/signin', async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'missing fields' });
     const key = email.trim().toLowerCase().replace(/\./g, ',');
-    const row = await rtdbRead(`dashboardUsers/${key}`);
+    let row = await rtdbRead(`dashboardAccounts/${key}`);
+    if (!row) row = await rtdbRead(`dashboardUsers/${key}`);
 
     if (!row) return res.status(401).json({ code: 'auth/user-not-found', message: 'User not found' });
     if (row.status === 'inactive') return res.status(401).json({ code: 'auth/user-disabled', message: 'Account disabled' });
@@ -349,11 +350,12 @@ app.post('/api/auth/create', async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'missing fields' });
     const key = email.trim().toLowerCase().replace(/\./g, ',');
-    const existing = await rtdbRead(`dashboardUsers/${key}`);
+    let existing = await rtdbRead(`dashboardAccounts/${key}`);
+    if (!existing) existing = await rtdbRead(`dashboardUsers/${key}`);
 
     if (existing) {
       if (existing.password !== password) {
-        await rtdbUpdate(`dashboardUsers/${key}`, { password });
+        await rtdbUpdate(`dashboardAccounts/${key}`, { password });
       }
       const token = crypto.randomBytes(32).toString('hex');
       authTokens.set(token, { uid: key, email: email.trim().toLowerCase() });
@@ -408,12 +410,19 @@ app.post('/api/init', async (req, res) => {
       if (error && !error.message.includes('already exists')) throw error;
     }
 
-    const seeds = [
-      { path: 'dashboardUsers/jafar@admin,com', value: { email: 'jafar@admin.com', password: '112233', role: 'admin', status: 'active', createdAt: new Date().toISOString() } },
-      { path: 'dashboardUsers/eng@admin,com', value: { email: 'eng@admin.com', password: 'eng6969', role: 'superadmin', status: 'active', createdAt: new Date().toISOString() } },
-      { path: 'dashboardUsers/superadmin@admin,com', value: { email: 'superadmin@admin.com', password: 'superadmin12345', role: 'superadmin', status: 'active', createdAt: new Date().toISOString() } },
-      { path: 'settings/geoBlocking', value: { enabled: true, allowedCountries: ['EG'] } }
+    const now = new Date().toISOString();
+    const admins = [
+      { key: 'jafar@admin,com', email: 'jafar@admin.com', password: '112233', role: 'admin', name: 'جعفر' },
+      { key: 'eng@admin,com', email: 'eng@admin.com', password: 'eng6969', role: 'superadmin', name: 'مدير النظام الرئيسي' },
+      { key: 'superadmin@admin,com', email: 'superadmin@admin.com', password: 'superadmin12345', role: 'superadmin', name: 'مدير النظام' }
     ];
+    const seeds = [];
+    for (const a of admins) {
+      const val = { id: a.key, email: a.email, password: a.password, role: a.role, name: a.name, status: 'active', createdAt: now, updatedAt: now, forceLogoutAt: 0 };
+      seeds.push({ path: `dashboardUsers/${a.key}`, value: val });
+      seeds.push({ path: `dashboardAccounts/${a.key}`, value: val });
+    }
+    seeds.push({ path: 'settings/geoBlocking', value: { enabled: true, allowedCountries: ['EG'] } });
     for (const s of seeds) {
       await rtdbSet(s.path, s.value);
     }
@@ -426,12 +435,19 @@ app.post('/api/init', async (req, res) => {
 
 app.post('/api/setup', async (req, res) => {
   try {
-    const seeds = [
-      { path: 'dashboardUsers/jafar@admin,com', value: { email: 'jafar@admin.com', password: '112233', role: 'admin', status: 'active', createdAt: new Date().toISOString() } },
-      { path: 'dashboardUsers/eng@admin,com', value: { email: 'eng@admin.com', password: 'eng6969', role: 'superadmin', status: 'active', createdAt: new Date().toISOString() } },
-      { path: 'dashboardUsers/superadmin@admin,com', value: { email: 'superadmin@admin.com', password: 'superadmin12345', role: 'superadmin', status: 'active', createdAt: new Date().toISOString() } },
-      { path: 'settings/geoBlocking', value: { enabled: true, allowedCountries: ['EG'] } }
+    const now = new Date().toISOString();
+    const admins = [
+      { key: 'jafar@admin,com', email: 'jafar@admin.com', password: '112233', role: 'admin', name: 'جعفر' },
+      { key: 'eng@admin,com', email: 'eng@admin.com', password: 'eng6969', role: 'superadmin', name: 'مدير النظام الرئيسي' },
+      { key: 'superadmin@admin,com', email: 'superadmin@admin.com', password: 'superadmin12345', role: 'superadmin', name: 'مدير النظام' }
     ];
+    const seeds = [];
+    for (const a of admins) {
+      const val = { id: a.key, email: a.email, password: a.password, role: a.role, name: a.name, status: 'active', createdAt: now, updatedAt: now, forceLogoutAt: 0 };
+      seeds.push({ path: `dashboardUsers/${a.key}`, value: val });
+      seeds.push({ path: `dashboardAccounts/${a.key}`, value: val });
+    }
+    seeds.push({ path: 'settings/geoBlocking', value: { enabled: true, allowedCountries: ['EG'] } });
     for (const s of seeds) {
       await rtdbSet(s.path, s.value);
     }
