@@ -86,12 +86,17 @@ function pathToTable(p) {
 function rowToFirebase(row, table) {
   if (!row) return null;
   if (table === 'dashboard_accounts') {
-    return {
+    const base = {
       id: row.id, email: row.email, password: row.password, role: row.role,
       name: row.name, status: row.status,
       createdAt: row.created_at, updatedAt: row.updated_at,
       lastLoginAt: row.last_login_at, forceLogoutAt: row.force_logout_at || 0
     };
+    if (row.data && typeof row.data === 'object') {
+      const expanded = expandSlashKeys(row.data);
+      Object.assign(base, expanded);
+    }
+    return base;
   }
   if (table === 'customers') {
     const base = {
@@ -127,6 +132,7 @@ function rowToFirebase(row, table) {
 function firebaseToRow(data, table) {
   if (table === 'dashboard_accounts') {
     const row = {};
+    const knownAdminFields = ['id','email','password','role','name','status','createdAt','updatedAt','lastLoginAt','forceLogoutAt'];
     if (data.id !== undefined) row.id = data.id;
     if (data.email !== undefined) row.email = data.email;
     if (data.password !== undefined) row.password = data.password;
@@ -137,6 +143,11 @@ function firebaseToRow(data, table) {
     if (data.updatedAt !== undefined) row.updated_at = data.updatedAt;
     if (data.lastLoginAt !== undefined) row.last_login_at = data.lastLoginAt;
     if (data.forceLogoutAt !== undefined) row.force_logout_at = data.forceLogoutAt;
+    const extra = {};
+    for (const [k, v] of Object.entries(data)) {
+      if (!knownAdminFields.includes(k)) extra[k] = v;
+    }
+    if (Object.keys(extra).length) row.data = deepMerge(row.data || {}, extra);
     return row;
   }
   if (table === 'customers') {
@@ -219,7 +230,13 @@ async function rtdbSet(rawPath, value) {
   const p = normPath(rawPath);
   if (!p) return;
   const { table, root, parts } = pathToTable(p);
-  if (!table || parts.length < 2) return;
+  if (!table) return;
+
+  if (value === null || value === undefined) {
+    return rtdbRemove(rawPath);
+  }
+
+  if (parts.length < 2) return;
 
   const id = parts[1];
 
@@ -340,7 +357,12 @@ async function rtdbRemove(rawPath) {
   const p = normPath(rawPath);
   if (!p) return;
   const { table, parts } = pathToTable(p);
-  if (!table || parts.length < 2) return;
+  if (!table) return;
+
+  if (parts.length === 1) {
+    await supabase.from(table).delete().neq('id', '___never___');
+    return;
+  }
 
   const id = parts[1];
 
@@ -537,6 +559,32 @@ app.get('/api/fb/poll', async (req, res) => {
     const p = normPath(req.query.path);
     const val = await rtdbRead(p);
     res.json({ value: val });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Migration: ensure data columns exist ────────────────────
+app.post('/api/migrate', async (req, res) => {
+  try {
+    const { Pool } = require('pg');
+    const connStr = process.env.DATABASE_URL || `${SUPABASE_URL.replace('https://', 'postgresql://postgres:' + encodeURIComponent(process.env.SUPABASE_DB_PASS || '') + '@db.')}/postgres`;
+    const pool = new Pool({ connectionString: connStr, ssl: { rejectUnauthorized: false } });
+    const migrations = [
+      `ALTER TABLE dashboard_accounts ADD COLUMN IF NOT EXISTS data jsonb DEFAULT '{}'::jsonb`,
+      `ALTER TABLE customer_events DROP CONSTRAINT IF EXISTS customer_events_customer_id_fkey`
+    ];
+    const results = [];
+    for (const sql of migrations) {
+      try {
+        await pool.query(sql);
+        results.push({ sql: sql.substring(0, 60), ok: true });
+      } catch (e) {
+        results.push({ sql: sql.substring(0, 60), error: e.message });
+      }
+    }
+    await pool.end();
+    res.json({ ok: true, results });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
