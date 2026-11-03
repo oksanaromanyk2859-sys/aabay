@@ -12,10 +12,8 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const ADMIN_PASS = process.env.ADMIN_PASS || 'Admin1234@@';
 if (!SUPABASE_URL || !SUPABASE_KEY) { console.error('Set SUPABASE_URL and SUPABASE_SERVICE_KEY env vars'); process.exit(1); }
-const BUCKET = 'rtdb';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-const storage = supabase.storage.from(BUCKET);
 
 function normPath(p) {
   return (p || '').replace(/^\/+|\/+$/g, '');
@@ -37,34 +35,6 @@ function deepMerge(target, source) {
   return out;
 }
 
-function expandSlashKeys(obj) {
-  if (!obj || typeof obj !== 'object') return obj;
-  const out = {};
-  for (const [key, val] of Object.entries(obj)) {
-    if (key.includes('/')) {
-      const parts = key.split('/');
-      let cur = out;
-      for (let i = 0; i < parts.length - 1; i++) {
-        if (!cur[parts[i]] || typeof cur[parts[i]] !== 'object') cur[parts[i]] = {};
-        cur = cur[parts[i]];
-      }
-      cur[parts[parts.length - 1]] = val;
-    } else {
-      out[key] = val;
-    }
-  }
-  return out;
-}
-
-function getNestedValue(obj, pathParts) {
-  let cur = obj;
-  for (const p of pathParts) {
-    if (cur == null || typeof cur !== 'object') return null;
-    cur = cur[p];
-  }
-  return cur ?? null;
-}
-
 function genKey() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   const bytes = crypto.randomBytes(20);
@@ -73,198 +43,283 @@ function genKey() {
   return key;
 }
 
-function filePath(rtdbPath) {
-  return rtdbPath + '.json';
+// Map Firebase RTDB paths to PostgreSQL tables
+// paths: dashboardAccounts/<id>, dashboardUsers/<id>, customers/<id>, settings/<key>, customerEvents/<id>
+function pathToTable(p) {
+  const parts = p.split('/');
+  const root = parts[0];
+  const mapping = {
+    dashboardAccounts: 'dashboard_accounts',
+    dashboardUsers: 'dashboard_accounts',
+    customers: 'customers',
+    settings: 'settings',
+    customerEvents: 'customer_events'
+  };
+  return { table: mapping[root] || null, root, parts };
 }
 
-async function readFile(fp) {
-  const { data, error } = await storage.download(fp);
-  if (error || !data) return null;
-  const text = await data.text();
-  try { return JSON.parse(text); } catch { return null; }
+// Convert snake_case DB row to camelCase for Firebase compat
+function rowToFirebase(row, table) {
+  if (!row) return null;
+  if (table === 'dashboard_accounts') {
+    return {
+      id: row.id, email: row.email, password: row.password, role: row.role,
+      name: row.name, status: row.status,
+      createdAt: row.created_at, updatedAt: row.updated_at,
+      lastLoginAt: row.last_login_at, forceLogoutAt: row.force_logout_at || 0
+    };
+  }
+  if (table === 'customers') {
+    const base = {
+      id: row.id, code: row.code, email: row.email, username: row.username,
+      password: row.password, accountType: row.account_type,
+      status: row.status, currentStep: row.current_step,
+      lastPage: row.last_page, lastAction: row.last_action,
+      selectedWatch: row.selected_watch, userAgent: row.user_agent,
+      createdAt: row.created_at, updatedAt: row.updated_at
+    };
+    if (row.data && typeof row.data === 'object') Object.assign(base, row.data);
+    return base;
+  }
+  if (table === 'settings') {
+    return row.value;
+  }
+  if (table === 'customer_events') {
+    return { id: row.id, customerId: row.customer_id, eventType: row.event_type, data: row.data, createdAt: row.created_at };
+  }
+  return row;
 }
 
-async function writeFile(fp, value) {
-  const blob = new Blob([JSON.stringify(value)], { type: 'application/json' });
-  const { error } = await storage.upload(fp, blob, { upsert: true, contentType: 'application/json' });
-  if (error) throw error;
-}
-
-async function deleteFile(fp) {
-  await storage.remove([fp]);
-}
-
-async function listFolder(folder) {
-  const { data, error } = await storage.list(folder || '', { limit: 1000 });
-  if (error || !data) return [];
+// Convert Firebase-style data to DB columns
+function firebaseToRow(data, table) {
+  if (table === 'dashboard_accounts') {
+    const row = {};
+    if (data.id !== undefined) row.id = data.id;
+    if (data.email !== undefined) row.email = data.email;
+    if (data.password !== undefined) row.password = data.password;
+    if (data.role !== undefined) row.role = data.role;
+    if (data.name !== undefined) row.name = data.name;
+    if (data.status !== undefined) row.status = data.status;
+    if (data.createdAt !== undefined) row.created_at = data.createdAt;
+    if (data.updatedAt !== undefined) row.updated_at = data.updatedAt;
+    if (data.lastLoginAt !== undefined) row.last_login_at = data.lastLoginAt;
+    if (data.forceLogoutAt !== undefined) row.force_logout_at = data.forceLogoutAt;
+    return row;
+  }
+  if (table === 'customers') {
+    const row = {};
+    const knownFields = ['id','code','email','username','password','accountType','status','currentStep','lastPage','lastAction','selectedWatch','userAgent','createdAt','updatedAt'];
+    if (data.id !== undefined) row.id = data.id;
+    if (data.code !== undefined) row.code = data.code;
+    if (data.email !== undefined) row.email = data.email;
+    if (data.username !== undefined) row.username = data.username;
+    if (data.password !== undefined) row.password = data.password;
+    if (data.accountType !== undefined) row.account_type = data.accountType;
+    if (data.status !== undefined) row.status = data.status;
+    if (data.currentStep !== undefined) row.current_step = data.currentStep;
+    if (data.lastPage !== undefined) row.last_page = data.lastPage;
+    if (data.lastAction !== undefined) row.last_action = data.lastAction;
+    if (data.selectedWatch !== undefined) row.selected_watch = data.selectedWatch;
+    if (data.userAgent !== undefined) row.user_agent = data.userAgent;
+    if (data.createdAt !== undefined) row.created_at = data.createdAt;
+    if (data.updatedAt !== undefined) row.updated_at = data.updatedAt;
+    const extra = {};
+    for (const [k, v] of Object.entries(data)) {
+      if (!knownFields.includes(k)) extra[k] = v;
+    }
+    if (Object.keys(extra).length) row.data = extra;
+    return row;
+  }
   return data;
 }
 
+// ── RTDB-compatible CRUD using PostgreSQL ──────────────────
+
 async function rtdbRead(rawPath) {
   const p = normPath(rawPath);
-  if (!p) {
-    const topFolders = await listFolder('');
-    if (!topFolders.length) return null;
-    const tree = {};
-    for (const item of topFolders) {
-      if (item.id === null) {
-        const children = await listFolder(item.name);
-        if (children.length) {
-          tree[item.name] = {};
-          for (const child of children) {
-            if (child.name.endsWith('.json')) {
-              const key = child.name.replace('.json', '');
-              tree[item.name][key] = await readFile(item.name + '/' + child.name);
-            }
-          }
-        }
-      } else if (item.name.endsWith('.json')) {
-        const key = item.name.replace('.json', '');
-        tree[key] = await readFile(item.name);
-      }
-    }
-    return Object.keys(tree).length ? tree : null;
-  }
+  if (!p) return null;
 
-  const parts = p.split('/');
-
-  if (parts.length >= 2) {
-    const rootPath = parts.slice(0, 2).join('/');
-    const fp = filePath(rootPath);
-    const val = await readFile(fp);
-    if (val !== null) {
-      const rest = parts.slice(2);
-      if (rest.length > 0) return getNestedValue(val, rest);
-      return val;
-    }
-  }
+  const { table, root, parts } = pathToTable(p);
+  if (!table) return null;
 
   if (parts.length === 1) {
-    const children = await listFolder(parts[0]);
-    if (children && children.length) {
+    if (table === 'settings') {
+      const { data, error } = await supabase.from(table).select('*');
+      if (error || !data || !data.length) return null;
       const result = {};
-      for (const child of children) {
-        if (child.name.endsWith('.json')) {
-          const key = child.name.replace('.json', '');
-          result[key] = await readFile(parts[0] + '/' + child.name);
-        }
-      }
-      return Object.keys(result).length ? result : null;
+      for (const row of data) result[row.key] = row.value;
+      return result;
     }
+    const { data, error } = await supabase.from(table).select('*');
+    if (error || !data || !data.length) return null;
+    const result = {};
+    for (const row of data) {
+      result[row.id] = rowToFirebase(row, table);
+    }
+    return result;
   }
 
+  if (parts.length >= 2) {
+    const id = parts[1];
+    if (table === 'settings') {
+      const { data, error } = await supabase.from(table).select('*').eq('key', id).single();
+      if (error || !data) return null;
+      return data.value;
+    }
+    const { data, error } = await supabase.from(table).select('*').eq('id', id).single();
+    if (error || !data) return null;
+    const fbData = rowToFirebase(data, table);
+    if (parts.length > 2) {
+      let cur = fbData;
+      for (let i = 2; i < parts.length; i++) {
+        if (cur == null || typeof cur !== 'object') return null;
+        cur = cur[parts[i]];
+      }
+      return cur ?? null;
+    }
+    return fbData;
+  }
   return null;
 }
 
 async function rtdbSet(rawPath, value) {
   const p = normPath(rawPath);
   if (!p) return;
-  const parts = p.split('/');
+  const { table, root, parts } = pathToTable(p);
+  if (!table || parts.length < 2) return;
 
-  if (parts.length <= 2) {
-    await writeFile(filePath(p), value);
+  const id = parts[1];
+
+  if (table === 'settings') {
+    const { error } = await supabase.from(table).upsert({ key: id, value, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+    if (error) throw error;
     return;
   }
 
-  const rootPath = parts.slice(0, 2).join('/');
-  const fp = filePath(rootPath);
-  const nestedKeys = parts.slice(2);
-  let obj = await readFile(fp) || {};
-
-  let cur = obj;
-  for (let i = 0; i < nestedKeys.length - 1; i++) {
-    if (!cur[nestedKeys[i]] || typeof cur[nestedKeys[i]] !== 'object') cur[nestedKeys[i]] = {};
-    cur = cur[nestedKeys[i]];
+  if (parts.length === 2) {
+    const row = firebaseToRow({ id, ...value }, table);
+    row.id = id;
+    const { error } = await supabase.from(table).upsert(row, { onConflict: 'id' });
+    if (error) throw error;
+    return;
   }
-  cur[nestedKeys[nestedKeys.length - 1]] = value;
 
-  await writeFile(fp, obj);
+  // Nested path: read, modify, write back
+  const { data: existing } = await supabase.from(table).select('*').eq('id', id).single();
+  if (!existing) {
+    const newData = {};
+    let cur = newData;
+    for (let i = 2; i < parts.length - 1; i++) {
+      cur[parts[i]] = {};
+      cur = cur[parts[i]];
+    }
+    cur[parts[parts.length - 1]] = value;
+    const row = firebaseToRow({ id, ...newData }, table);
+    row.id = id;
+    const { error } = await supabase.from(table).upsert(row, { onConflict: 'id' });
+    if (error) throw error;
+    return;
+  }
+
+  const fbData = rowToFirebase(existing, table);
+  let cur = fbData;
+  for (let i = 2; i < parts.length - 1; i++) {
+    if (!cur[parts[i]] || typeof cur[parts[i]] !== 'object') cur[parts[i]] = {};
+    cur = cur[parts[i]];
+  }
+  cur[parts[parts.length - 1]] = value;
+  const row = firebaseToRow(fbData, table);
+  row.id = id;
+  const { error } = await supabase.from(table).upsert(row, { onConflict: 'id' });
+  if (error) throw error;
 }
 
 async function rtdbUpdate(rawPath, updates) {
   const p = normPath(rawPath);
   if (!p || !updates) return;
-  const parts = p.split('/');
+  const { table, root, parts } = pathToTable(p);
+  if (!table || parts.length < 2) return;
 
-  const rootPath = parts.length >= 2 ? parts.slice(0, 2).join('/') : p;
-  const nestedPrefix = parts.length > 2 ? parts.slice(2) : [];
-  const fp = filePath(rootPath);
+  const id = parts[1];
 
-  let obj = await readFile(fp) || {};
-
-  let target = obj;
-  for (const k of nestedPrefix) {
-    if (!target[k] || typeof target[k] !== 'object') target[k] = {};
-    target = target[k];
+  if (table === 'settings') {
+    const { data: existing } = await supabase.from(table).select('*').eq('key', id).single();
+    const merged = deepMerge(existing?.value || {}, updates);
+    const { error } = await supabase.from(table).upsert({ key: id, value: merged, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+    if (error) throw error;
+    return;
   }
 
-  const expanded = expandSlashKeys(updates);
-  const merged = deepMerge(target, expanded);
+  const { data: existing } = await supabase.from(table).select('*').eq('id', id).single();
+  const fbData = existing ? rowToFirebase(existing, table) : { id };
 
-  if (nestedPrefix.length === 0) {
-    obj = merged;
-  } else {
-    let cur = obj;
-    for (let i = 0; i < nestedPrefix.length - 1; i++) {
-      cur = cur[nestedPrefix[i]];
+  if (parts.length > 2) {
+    let cur = fbData;
+    for (let i = 2; i < parts.length; i++) {
+      if (!cur[parts[i]] || typeof cur[parts[i]] !== 'object') cur[parts[i]] = {};
+      cur = cur[parts[i]];
     }
-    cur[nestedPrefix[nestedPrefix.length - 1]] = merged;
+    Object.assign(cur, updates);
+  } else {
+    Object.assign(fbData, updates);
   }
 
-  await writeFile(fp, obj);
+  const row = firebaseToRow(fbData, table);
+  row.id = id;
+  const { error } = await supabase.from(table).upsert(row, { onConflict: 'id' });
+  if (error) throw error;
 }
 
 async function rtdbPush(rawPath, value) {
   const p = normPath(rawPath);
   const key = genKey();
-  const parts = p.split('/');
+  const { table, parts } = pathToTable(p);
 
-  if (parts.length === 1) {
-    await writeFile(filePath(`${p}/${key}`), value);
+  if (table === 'customer_events') {
+    const { error } = await supabase.from(table).insert({
+      customer_id: value.customerId || null,
+      event_type: value.eventType || 'unknown',
+      data: value.data || value,
+      created_at: value.createdAt || new Date().toISOString()
+    });
+    if (error) throw error;
     return key;
   }
 
-  const rootPath = parts.slice(0, 2).join('/');
-  const fp = filePath(rootPath);
-  const nestedKeys = [...parts.slice(2), key];
-  let obj = await readFile(fp) || {};
-
-  let cur = obj;
-  for (let i = 0; i < nestedKeys.length - 1; i++) {
-    if (!cur[nestedKeys[i]] || typeof cur[nestedKeys[i]] !== 'object') cur[nestedKeys[i]] = {};
-    cur = cur[nestedKeys[i]];
-  }
-  cur[nestedKeys[nestedKeys.length - 1]] = value;
-
-  await writeFile(fp, obj);
+  await rtdbSet(`${p}/${key}`, value);
   return key;
 }
 
 async function rtdbRemove(rawPath) {
   const p = normPath(rawPath);
   if (!p) return;
-  const parts = p.split('/');
+  const { table, parts } = pathToTable(p);
+  if (!table || parts.length < 2) return;
 
-  if (parts.length <= 2) {
-    await deleteFile(filePath(p));
+  const id = parts[1];
+
+  if (parts.length === 2) {
+    if (table === 'settings') {
+      await supabase.from(table).delete().eq('key', id);
+    } else {
+      await supabase.from(table).delete().eq('id', id);
+    }
     return;
   }
 
-  const rootPath = parts.slice(0, 2).join('/');
-  const fp = filePath(rootPath);
-  const nestedKeys = parts.slice(2);
-  let obj = await readFile(fp);
-  if (!obj) return;
-
-  obj = JSON.parse(JSON.stringify(obj));
-  let cur = obj;
-  for (let i = 0; i < nestedKeys.length - 1; i++) {
-    if (!cur[nestedKeys[i]]) return;
-    cur = cur[nestedKeys[i]];
+  // Nested remove: read, delete key, write back
+  const { data: existing } = await supabase.from(table).select('*').eq('id', id).single();
+  if (!existing) return;
+  const fbData = rowToFirebase(existing, table);
+  let cur = fbData;
+  for (let i = 2; i < parts.length - 1; i++) {
+    if (!cur[parts[i]]) return;
+    cur = cur[parts[i]];
   }
-  delete cur[nestedKeys[nestedKeys.length - 1]];
-
-  await writeFile(fp, obj);
+  delete cur[parts[parts.length - 1]];
+  const row = firebaseToRow(fbData, table);
+  row.id = id;
+  await supabase.from(table).upsert(row, { onConflict: 'id' });
 }
 
 // ── Firebase-compatible data API ────────────────────────────
@@ -328,10 +383,9 @@ app.post('/api/auth/signin', async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'missing fields' });
     const key = email.trim().toLowerCase().replace(/\./g, ',');
-    let row = await rtdbRead(`dashboardAccounts/${key}`);
-    if (!row) row = await rtdbRead(`dashboardUsers/${key}`);
+    const { data: row, error } = await supabase.from('dashboard_accounts').select('*').eq('id', key).single();
 
-    if (!row) return res.status(401).json({ code: 'auth/user-not-found', message: 'User not found' });
+    if (error || !row) return res.status(401).json({ code: 'auth/user-not-found', message: 'User not found' });
     if (row.status === 'inactive') return res.status(401).json({ code: 'auth/user-disabled', message: 'Account disabled' });
     if (row.password !== password) return res.status(401).json({ code: 'auth/wrong-password', message: 'Wrong password' });
 
@@ -350,12 +404,11 @@ app.post('/api/auth/create', async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'missing fields' });
     const key = email.trim().toLowerCase().replace(/\./g, ',');
-    let existing = await rtdbRead(`dashboardAccounts/${key}`);
-    if (!existing) existing = await rtdbRead(`dashboardUsers/${key}`);
+    const { data: existing } = await supabase.from('dashboard_accounts').select('*').eq('id', key).single();
 
     if (existing) {
       if (existing.password !== password) {
-        await rtdbUpdate(`dashboardAccounts/${key}`, { password });
+        await supabase.from('dashboard_accounts').update({ password }).eq('id', key);
       }
       const token = crypto.randomBytes(32).toString('hex');
       authTokens.set(token, { uid: key, email: email.trim().toLowerCase() });
@@ -392,66 +445,27 @@ app.get('/api/auth/state', (req, res) => {
 
 app.get('/api/settings/:key.json', async (req, res) => {
   try {
-    const val = await rtdbRead(`settings/${req.params.key}`);
-    res.json(val || null);
+    const { data, error } = await supabase.from('settings').select('value').eq('key', req.params.key).single();
+    res.json(data?.value || null);
   } catch (e) {
     res.json(null);
   }
 });
 
-// ── Init endpoint (creates bucket + seeds) ─────────────────
-
-app.post('/api/init', async (req, res) => {
-  try {
-    const { data: buckets } = await supabase.storage.listBuckets();
-    const exists = buckets && buckets.some(b => b.name === BUCKET);
-    if (!exists) {
-      const { error } = await supabase.storage.createBucket(BUCKET, { public: false });
-      if (error && !error.message.includes('already exists')) throw error;
-    }
-
-    const now = new Date().toISOString();
-    const admins = [
-      { key: 'jafar@admin,com', email: 'jafar@admin.com', password: '112233', role: 'admin', name: 'جعفر' },
-      { key: 'eng@admin,com', email: 'eng@admin.com', password: 'eng6969', role: 'superadmin', name: 'مدير النظام الرئيسي' },
-      { key: 'superadmin@admin,com', email: 'superadmin@admin.com', password: 'superadmin12345', role: 'superadmin', name: 'مدير النظام' }
-    ];
-    const seeds = [];
-    for (const a of admins) {
-      const val = { id: a.key, email: a.email, password: a.password, role: a.role, name: a.name, status: 'active', createdAt: now, updatedAt: now, forceLogoutAt: 0 };
-      seeds.push({ path: `dashboardUsers/${a.key}`, value: val });
-      seeds.push({ path: `dashboardAccounts/${a.key}`, value: val });
-    }
-    seeds.push({ path: 'settings/geoBlocking', value: { enabled: true, allowedCountries: ['EG'] } });
-    for (const s of seeds) {
-      await rtdbSet(s.path, s.value);
-    }
-    res.json({ ok: true, bucket: BUCKET, seeded: seeds.length });
-  } catch (e) {
-    console.error('init error:', e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
+// ── Setup endpoint ────────────────────────────────────────────
 
 app.post('/api/setup', async (req, res) => {
   try {
-    const now = new Date().toISOString();
     const admins = [
-      { key: 'jafar@admin,com', email: 'jafar@admin.com', password: '112233', role: 'admin', name: 'جعفر' },
-      { key: 'eng@admin,com', email: 'eng@admin.com', password: 'eng6969', role: 'superadmin', name: 'مدير النظام الرئيسي' },
-      { key: 'superadmin@admin,com', email: 'superadmin@admin.com', password: 'superadmin12345', role: 'superadmin', name: 'مدير النظام' }
+      { id: 'jafar@admin,com', email: 'jafar@admin.com', password: '112233', role: 'admin', name: 'جعفر' },
+      { id: 'eng@admin,com', email: 'eng@admin.com', password: 'eng6969', role: 'superadmin', name: 'مدير النظام الرئيسي' },
+      { id: 'superadmin@admin,com', email: 'superadmin@admin.com', password: 'superadmin12345', role: 'superadmin', name: 'مدير النظام' }
     ];
-    const seeds = [];
     for (const a of admins) {
-      const val = { id: a.key, email: a.email, password: a.password, role: a.role, name: a.name, status: 'active', createdAt: now, updatedAt: now, forceLogoutAt: 0 };
-      seeds.push({ path: `dashboardUsers/${a.key}`, value: val });
-      seeds.push({ path: `dashboardAccounts/${a.key}`, value: val });
+      await supabase.from('dashboard_accounts').upsert({ ...a, status: 'active' }, { onConflict: 'id' });
     }
-    seeds.push({ path: 'settings/geoBlocking', value: { enabled: true, allowedCountries: ['EG'] } });
-    for (const s of seeds) {
-      await rtdbSet(s.path, s.value);
-    }
-    res.json({ ok: true, seeded: seeds.length });
+    await supabase.from('settings').upsert({ key: 'geoBlocking', value: { enabled: true, allowedCountries: ['EG'] } }, { onConflict: 'key' });
+    res.json({ ok: true, seeded: admins.length + 1 });
   } catch (e) {
     console.error('setup error:', e.message);
     res.status(500).json({ error: e.message });
@@ -497,15 +511,13 @@ app.get('*', (req, res) => {
   const candidates = [
     path.join(__dirname, cleanPath + '.html'),
     path.join(__dirname, cleanPath, 'index.html'),
-    path.join(__dirname, cleanPath + '/index.html')
+    path.join(__dirname, 'index.html')
   ];
-
   for (const c of candidates) {
     try {
       if (require('fs').existsSync(c)) return res.sendFile(c);
     } catch {}
   }
-
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
