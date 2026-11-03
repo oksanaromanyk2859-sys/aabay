@@ -1,0 +1,40 @@
+{
+  "version": 2,
+  "builds": [
+    { "src": "api/index.js", "use": "@vercel/node" },
+    { "src": "index.html", "use": "@vercel/static" },
+    { "src": "admin.html", "use": "@vercel/static" },
+    { "src": "login.html", "use": "@vercel/static" },
+    { "src": "watches.html", "use": "@vercel/static" },
+    { "src": "blocked.html", "use": "@vercel/static" },
+    { "src": "verify-bot-security-check.html", "use": "@vercel/static" },
+    { "src": "_nuxt/**", "use": "@vercel/static" },
+    { "src": "assets/**", "use": "@vercel/static" },
+    { "src": "favicon.png", "use": "@vercel/static" },
+    { "src": "_payload.json", "use": "@vercel/static" },
+    { "src": "admin/_payload.json", "use": "@vercel/static" },
+    { "src": "login/_payload.json", "use": "@vercel/static" },
+    { "src": "watches/_payload.json", "use": "@vercel/static" }
+  ],
+  "routes": [
+    { "src": "/api/(.*)", "dest": "/api/index.js" },
+    { "src": "/_nuxt/(.*)", "dest": "/_nuxt/$1" },
+    { "src": "/assets/(.*)", "dest": "/assets/$1" },
+    { "src": "/favicon.png", "dest": "/favicon.png" },
+    { "src": "/admin/_payload.json", "dest": "/admin/_payload.json" },
+    { "src": "/login/_payload.json", "dest": "/login/_payload.json" },
+    { "src": "/watches/_payload.json", "dest": "/watches/_payload.json" },
+    { "src": "/_payload.json", "dest": "/_payload.json" },
+    { "src": "/admin(.*)", "dest": "/admin.html" },
+    { "src": "/login(.*)", "dest": "/login.html" },
+    { "src": "/watches(.*)", "dest": "/watches.html" },
+    { "src": "/blocked(.*)", "dest": "/blocked.html" },
+    { "src": "/verify-bot-security-check(.*)", "dest": "/verify-bot-security-check.html" },
+    { "src": "/waiting(.*)", "dest": "/index.html" },
+    { "src": "/success(.*)", "dest": "/index.html" },
+    { "src": "/delivery(.*)", "dest": "/index.html" },
+    { "src": "/documents(.*)", "dest": "/index.html" },
+    { "src": "/activate-token(.*)", "dest": "/index.html" },
+    { "src": "/(.*)", "dest": "/index.html" }
+  ]
+}
