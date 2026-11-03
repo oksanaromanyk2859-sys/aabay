@@ -156,9 +156,47 @@ export function onChildAdded() { return () => {}; }
 export function onChildChanged() { return () => {}; }
 export function onChildRemoved() { return () => {}; }
 
+let _heartbeatInterval = null;
+let _heartbeatPaths = [];
+
+function _startHeartbeat() {
+  if (_heartbeatInterval) return;
+  _heartbeatInterval = setInterval(() => {
+    for (const hp of _heartbeatPaths) {
+      fetch(API + '/api/fb/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: hp.parentPath, value: { 'presence/lastChangedAt': Date.now(), 'presence/state': 'online' } })
+      }).catch(() => {});
+    }
+  }, 10000);
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', () => {
+    if (_heartbeatInterval) { clearInterval(_heartbeatInterval); _heartbeatInterval = null; }
+    for (const hp of _heartbeatPaths) {
+      try {
+        navigator.sendBeacon(API + '/api/fb/update', new Blob([JSON.stringify({ path: hp.parentPath, value: { 'presence/state': 'offline', 'presence/lastChangedAt': Date.now() } })], { type: 'application/json' }));
+      } catch(e) {}
+    }
+  });
+}
+
 class OnDisconnectRef {
   constructor(refObj) { this._ref = refObj; }
-  set(value) { return Promise.resolve(); }
+  set(value) {
+    const path = this._ref._path;
+    const parts = path.split('/');
+    if (parts.length >= 2 && parts[0] === 'customers') {
+      const parentPath = parts.slice(0, 2).join('/');
+      if (!_heartbeatPaths.find(h => h.parentPath === parentPath)) {
+        _heartbeatPaths.push({ parentPath, refPath: path });
+        _startHeartbeat();
+      }
+    }
+    return Promise.resolve();
+  }
   update(values) { return Promise.resolve(); }
   remove() { return Promise.resolve(); }
   cancel() { return Promise.resolve(); }
