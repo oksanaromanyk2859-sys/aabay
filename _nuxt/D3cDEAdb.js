@@ -44,8 +44,8 @@ export async function signInWithEmailAndPassword(auth, email, password) {
     throw err;
   }
   _authToken = data.token;
-  _currentUser = { uid: data.uid, email: data.email, getIdToken: () => Promise.resolve(data.token) };
-  try { localStorage.setItem('_auth_token', data.token); localStorage.setItem('_auth_user', JSON.stringify(_currentUser)); } catch(e) {}
+  _currentUser = { uid: data.uid, email: data.email, getIdToken: () => Promise.resolve(data.token), getIdTokenResult: () => Promise.resolve({ claims: data.claims || {} }), reload: async () => {} };
+  try { localStorage.setItem('_auth_token', data.token); localStorage.setItem('_auth_user', JSON.stringify({ uid: data.uid, email: data.email })); } catch(e) {}
   notifyAuthState();
   return { user: _currentUser };
 }
@@ -63,8 +63,8 @@ export async function createUserWithEmailAndPassword(auth, email, password) {
     throw err;
   }
   _authToken = data.token;
-  _currentUser = { uid: data.uid, email: data.email, getIdToken: () => Promise.resolve(data.token) };
-  try { localStorage.setItem('_auth_token', data.token); localStorage.setItem('_auth_user', JSON.stringify(_currentUser)); } catch(e) {}
+  _currentUser = { uid: data.uid, email: data.email, getIdToken: () => Promise.resolve(data.token), getIdTokenResult: () => Promise.resolve({ claims: data.claims || {} }), reload: async () => {} };
+  try { localStorage.setItem('_auth_token', data.token); localStorage.setItem('_auth_user', JSON.stringify({ uid: data.uid, email: data.email })); } catch(e) {}
   notifyAuthState();
   return { user: _currentUser };
 }
@@ -94,6 +94,8 @@ export async function authStateReady() {
     if (saved && token) {
       _currentUser = JSON.parse(saved);
       _currentUser.getIdToken = () => Promise.resolve(token);
+      _currentUser.getIdTokenResult = () => Promise.resolve({ claims: {} });
+      _currentUser.reload = async () => {};
       _authToken = token;
     }
   } catch(e) {}

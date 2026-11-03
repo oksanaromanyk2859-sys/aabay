@@ -392,7 +392,7 @@ app.post('/api/auth/signin', async (req, res) => {
     const uid = key;
     const token = crypto.randomBytes(32).toString('hex');
     authTokens.set(token, { uid, email: email.trim().toLowerCase() });
-    res.json({ uid, email: email.trim().toLowerCase(), token });
+    res.json({ uid, email: email.trim().toLowerCase(), token, claims: { role: row.role } });
   } catch (e) {
     console.error('auth/signin error:', e.message);
     res.status(500).json({ error: e.message });
@@ -412,7 +412,7 @@ app.post('/api/auth/create', async (req, res) => {
       }
       const token = crypto.randomBytes(32).toString('hex');
       authTokens.set(token, { uid: key, email: email.trim().toLowerCase() });
-      return res.json({ uid: key, email: email.trim().toLowerCase(), token, existing: true });
+      return res.json({ uid: key, email: email.trim().toLowerCase(), token, existing: true, claims: { role: existing.role } });
     }
 
     const uid = key;
