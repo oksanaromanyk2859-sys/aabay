@@ -609,8 +609,10 @@ app.get(['/api/settings/:key.json', '/settings/:key.json'], async (req, res) => 
 app.put(['/api/settings/:key.json', '/settings/:key.json'], async (req, res) => {
   try {
     const key = req.params.key;
-    const value = req.body;
-    await supabase.from('settings').upsert({ key, value }, { onConflict: 'key' });
+    const newFields = req.body;
+    const { data: existing } = await supabase.from('settings').select('value').eq('key', key).single();
+    const merged = { ...(existing?.value || {}), ...newFields };
+    await supabase.from('settings').upsert({ key, value: merged }, { onConflict: 'key' });
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
