@@ -43,6 +43,30 @@ function genKey() {
   return key;
 }
 
+// Firebase RTDB expands slash-separated keys in update(): {"a/b": v} → {a: {b: v}}
+function expandSlashKeys(obj) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj;
+  const result = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (key.includes('/')) {
+      const parts = key.split('/');
+      let cur = result;
+      for (let i = 0; i < parts.length - 1; i++) {
+        if (!cur[parts[i]] || typeof cur[parts[i]] !== 'object') cur[parts[i]] = {};
+        cur = cur[parts[i]];
+      }
+      cur[parts[parts.length - 1]] = value;
+    } else {
+      if (value && typeof value === 'object' && !Array.isArray(value) && result[key] && typeof result[key] === 'object') {
+        result[key] = deepMerge(result[key], value);
+      } else {
+        result[key] = value;
+      }
+    }
+  }
+  return result;
+}
+
 // Map Firebase RTDB paths to PostgreSQL tables
 // paths: dashboardAccounts/<id>, dashboardUsers/<id>, customers/<id>, settings/<key>, customerEvents/<id>
 function pathToTable(p) {
@@ -78,7 +102,16 @@ function rowToFirebase(row, table) {
       selectedWatch: row.selected_watch, userAgent: row.user_agent,
       createdAt: row.created_at, updatedAt: row.updated_at
     };
-    if (row.data && typeof row.data === 'object') Object.assign(base, row.data);
+    if (row.data && typeof row.data === 'object') {
+      const expanded = expandSlashKeys(row.data);
+      for (const [k, v] of Object.entries(expanded)) {
+        if (v && typeof v === 'object' && !Array.isArray(v) && base[k] && typeof base[k] === 'object') {
+          base[k] = deepMerge(base[k], v);
+        } else {
+          base[k] = v;
+        }
+      }
+    }
     return base;
   }
   if (table === 'settings') {
@@ -127,7 +160,7 @@ function firebaseToRow(data, table) {
     for (const [k, v] of Object.entries(data)) {
       if (!knownFields.includes(k)) extra[k] = v;
     }
-    if (Object.keys(extra).length) row.data = extra;
+    if (Object.keys(extra).length) row.data = deepMerge(row.data || {}, extra);
     return row;
   }
   return data;
@@ -241,10 +274,11 @@ async function rtdbUpdate(rawPath, updates) {
   if (!table || parts.length < 2) return;
 
   const id = parts[1];
+  const expanded = expandSlashKeys(updates);
 
   if (table === 'settings') {
     const { data: existing } = await supabase.from(table).select('*').eq('key', id).single();
-    const merged = deepMerge(existing?.value || {}, updates);
+    const merged = deepMerge(existing?.value || {}, expanded);
     const { error } = await supabase.from(table).upsert({ key: id, value: merged, updated_at: new Date().toISOString() }, { onConflict: 'key' });
     if (error) throw error;
     return;
@@ -259,9 +293,16 @@ async function rtdbUpdate(rawPath, updates) {
       if (!cur[parts[i]] || typeof cur[parts[i]] !== 'object') cur[parts[i]] = {};
       cur = cur[parts[i]];
     }
-    Object.assign(cur, updates);
+    deepMerge(cur, expanded);
+    Object.assign(cur, expanded);
   } else {
-    Object.assign(fbData, updates);
+    for (const [k, v] of Object.entries(expanded)) {
+      if (v && typeof v === 'object' && !Array.isArray(v) && fbData[k] && typeof fbData[k] === 'object') {
+        fbData[k] = deepMerge(fbData[k], v);
+      } else {
+        fbData[k] = v;
+      }
+    }
   }
 
   const row = firebaseToRow(fbData, table);
@@ -276,12 +317,17 @@ async function rtdbPush(rawPath, value) {
   const { table, parts } = pathToTable(p);
 
   if (table === 'customer_events') {
-    const { error } = await supabase.from(table).insert({
+    const row = {
       customer_id: value.customerId || null,
       event_type: value.eventType || 'unknown',
       data: value.data || value,
       created_at: value.createdAt || new Date().toISOString()
-    });
+    };
+    let { error } = await supabase.from(table).insert(row);
+    if (error && error.message?.includes('foreign key')) {
+      row.customer_id = null;
+      ({ error } = await supabase.from(table).insert(row));
+    }
     if (error) throw error;
     return key;
   }

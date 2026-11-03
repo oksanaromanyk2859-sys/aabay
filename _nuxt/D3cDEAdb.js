@@ -5,7 +5,7 @@ const API = '';
 let _currentUser = null;
 let _authToken = null;
 let _authStateCallbacks = [];
-let _authInstance = null;
+let _defaultAuthInstance = null;
 
 function notifyAuthState() {
   for (const cb of _authStateCallbacks) {
@@ -13,10 +13,33 @@ function notifyAuthState() {
   }
 }
 
+function _isSecondaryAuth(auth) {
+  return auth && auth._secondary === true;
+}
+
 export function getAuth(app) {
-  if (!_authInstance) {
-    _authInstance = {
+  if (app && app.name && app.name !== '[DEFAULT]') {
+    return {
+      app: app,
+      _secondary: true,
+      _user: null,
+      _token: null,
+      get currentUser() { return this._user; },
+      onAuthStateChanged(callback) {
+        setTimeout(() => callback(this._user), 0);
+        return () => {};
+      },
+      signOut() {
+        this._user = null;
+        this._token = null;
+        return Promise.resolve();
+      }
+    };
+  }
+  if (!_defaultAuthInstance) {
+    _defaultAuthInstance = {
       app: app || null,
+      _secondary: false,
       get currentUser() { return _currentUser; },
       onAuthStateChanged(callback) {
         _authStateCallbacks.push(callback);
@@ -25,10 +48,10 @@ export function getAuth(app) {
           _authStateCallbacks = _authStateCallbacks.filter(c => c !== callback);
         };
       },
-      signOut() { return signOut(_authInstance); }
+      signOut() { return signOut(_defaultAuthInstance); }
     };
   }
-  return _authInstance;
+  return _defaultAuthInstance;
 }
 
 export async function signInWithEmailAndPassword(auth, email, password) {
@@ -43,11 +66,17 @@ export async function signInWithEmailAndPassword(auth, email, password) {
     err.code = data.code || 'auth/unknown';
     throw err;
   }
-  _authToken = data.token;
-  _currentUser = { uid: data.uid, email: data.email, getIdToken: () => Promise.resolve(data.token), getIdTokenResult: () => Promise.resolve({ claims: data.claims || {} }), reload: async () => {} };
-  try { localStorage.setItem('_auth_token', data.token); localStorage.setItem('_auth_user', JSON.stringify({ uid: data.uid, email: data.email })); } catch(e) {}
-  notifyAuthState();
-  return { user: _currentUser };
+  const user = { uid: data.uid, email: data.email, getIdToken: () => Promise.resolve(data.token), getIdTokenResult: () => Promise.resolve({ claims: data.claims || {} }), reload: async () => {} };
+  if (_isSecondaryAuth(auth)) {
+    auth._user = user;
+    auth._token = data.token;
+  } else {
+    _authToken = data.token;
+    _currentUser = user;
+    try { localStorage.setItem('_auth_token', data.token); localStorage.setItem('_auth_user', JSON.stringify({ uid: data.uid, email: data.email })); } catch(e) {}
+    notifyAuthState();
+  }
+  return { user };
 }
 
 export async function createUserWithEmailAndPassword(auth, email, password) {
@@ -62,14 +91,32 @@ export async function createUserWithEmailAndPassword(auth, email, password) {
     err.code = data.code || 'auth/unknown';
     throw err;
   }
-  _authToken = data.token;
-  _currentUser = { uid: data.uid, email: data.email, getIdToken: () => Promise.resolve(data.token), getIdTokenResult: () => Promise.resolve({ claims: data.claims || {} }), reload: async () => {} };
-  try { localStorage.setItem('_auth_token', data.token); localStorage.setItem('_auth_user', JSON.stringify({ uid: data.uid, email: data.email })); } catch(e) {}
-  notifyAuthState();
-  return { user: _currentUser };
+  const user = { uid: data.uid, email: data.email, getIdToken: () => Promise.resolve(data.token), getIdTokenResult: () => Promise.resolve({ claims: data.claims || {} }), reload: async () => {} };
+  if (_isSecondaryAuth(auth)) {
+    auth._user = user;
+    auth._token = data.token;
+  } else {
+    _authToken = data.token;
+    _currentUser = user;
+    try { localStorage.setItem('_auth_token', data.token); localStorage.setItem('_auth_user', JSON.stringify({ uid: data.uid, email: data.email })); } catch(e) {}
+    notifyAuthState();
+  }
+  return { user };
 }
 
 export async function signOut(auth) {
+  if (_isSecondaryAuth(auth)) {
+    const token = auth._token;
+    auth._user = null;
+    auth._token = null;
+    if (token) {
+      await fetch(API + '/api/auth/signout', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token }
+      }).catch(() => {});
+    }
+    return;
+  }
   const token = _authToken;
   _currentUser = null;
   _authToken = null;
