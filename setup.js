@@ -1,39 +1,32 @@
-const { Client } = require('pg');
+const { createClient } = require('@supabase/supabase-js');
 
-const CONNECTION = process.env.DATABASE_URL;
-if (!CONNECTION) {
-  console.error('Set DATABASE_URL env var (Supabase PostgreSQL connection string)');
-  process.exit(1);
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
+if (!SUPABASE_URL || !SUPABASE_KEY) { console.error('Set SUPABASE_URL and SUPABASE_SERVICE_KEY env vars'); process.exit(1); }
+const BUCKET = 'rtdb';
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+async function writeFile(fp, value) {
+  const storage = supabase.storage.from(BUCKET);
+  const blob = new Blob([JSON.stringify(value)], { type: 'application/json' });
+  const { error } = await storage.upload(fp, blob, { upsert: true, contentType: 'application/json' });
+  if (error) throw error;
 }
 
 async function main() {
-  const client = new Client({ connectionString: CONNECTION, ssl: { rejectUnauthorized: false } });
-  await client.connect();
-  console.log('Connected to Supabase PostgreSQL');
-
-  await client.query(`
-    CREATE TABLE IF NOT EXISTS rtdb (
-      path TEXT PRIMARY KEY,
-      value JSONB DEFAULT '{}',
-      updated_at TIMESTAMPTZ DEFAULT NOW()
-    );
-  `);
-  console.log('Table "rtdb" ensured');
-
-  await client.query(`CREATE INDEX IF NOT EXISTS idx_rtdb_path_prefix ON rtdb USING btree (path text_pattern_ops);`);
-  console.log('Index ensured');
-
-  const { createClient } = require('@supabase/supabase-js');
-  const SUPABASE_URL = process.env.SUPABASE_URL;
-  const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
-
-  if (!SUPABASE_URL || !SUPABASE_KEY) {
-    console.log('SUPABASE_URL/SUPABASE_SERVICE_KEY not set, skipping seed via REST');
-    await client.end();
-    return;
+  console.log('Ensuring storage bucket exists...');
+  const { data: buckets } = await supabase.storage.listBuckets();
+  const exists = buckets?.some(b => b.name === BUCKET);
+  if (!exists) {
+    const { error } = await supabase.storage.createBucket(BUCKET, { public: false });
+    if (error) { console.error('Failed to create bucket:', error.message); process.exit(1); }
+    console.log('Created bucket:', BUCKET);
+  } else {
+    console.log('Bucket already exists:', BUCKET);
   }
 
-  const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+  console.log('Seeding data...');
   const seeds = [
     {
       path: 'dashboardUsers/jafar@admin,com',
@@ -54,16 +47,15 @@ async function main() {
   ];
 
   for (const s of seeds) {
-    const { error } = await supabase.from('rtdb').upsert(
-      { path: s.path, value: s.value, updated_at: new Date().toISOString() },
-      { onConflict: 'path' }
-    );
-    if (error) console.error(`  Error seeding ${s.path}:`, error.message);
-    else console.log(`  Seeded: ${s.path}`);
+    try {
+      await writeFile(s.path + '.json', s.value);
+      console.log('  Seeded:', s.path);
+    } catch (e) {
+      console.error('  Error seeding', s.path + ':', e.message);
+    }
   }
 
-  console.log('Setup complete');
-  await client.end();
+  console.log('Setup complete!');
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

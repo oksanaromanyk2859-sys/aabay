@@ -11,24 +11,14 @@ app.use(express.json({ limit: '10mb' }));
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const ADMIN_PASS = process.env.ADMIN_PASS || 'Admin1234@@';
-
-if (!SUPABASE_URL || !SUPABASE_KEY) {
-  console.error('Missing SUPABASE_URL or SUPABASE_SERVICE_KEY env vars');
-  process.exit(1);
-}
+if (!SUPABASE_URL || !SUPABASE_KEY) { console.error('Set SUPABASE_URL and SUPABASE_SERVICE_KEY env vars'); process.exit(1); }
+const BUCKET = 'rtdb';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-
-// ── helpers ──────────────────────────────────────────────────
+const storage = supabase.storage.from(BUCKET);
 
 function normPath(p) {
   return (p || '').replace(/^\/+|\/+$/g, '');
-}
-
-function splitPath(p) {
-  const n = normPath(p);
-  const parts = n.split('/');
-  return parts;
 }
 
 function deepMerge(target, source) {
@@ -83,53 +73,84 @@ function genKey() {
   return key;
 }
 
-// ── rtdb CRUD via Supabase ──────────────────────────────────
+function filePath(rtdbPath) {
+  return rtdbPath + '.json';
+}
+
+async function readFile(fp) {
+  const { data, error } = await storage.download(fp);
+  if (error || !data) return null;
+  const text = await data.text();
+  try { return JSON.parse(text); } catch { return null; }
+}
+
+async function writeFile(fp, value) {
+  const blob = new Blob([JSON.stringify(value)], { type: 'application/json' });
+  const { error } = await storage.upload(fp, blob, { upsert: true, contentType: 'application/json' });
+  if (error) throw error;
+}
+
+async function deleteFile(fp) {
+  await storage.remove([fp]);
+}
+
+async function listFolder(folder) {
+  const { data, error } = await storage.list(folder || '', { limit: 1000 });
+  if (error || !data) return [];
+  return data;
+}
 
 async function rtdbRead(rawPath) {
   const p = normPath(rawPath);
   if (!p) {
-    const { data } = await supabase.from('rtdb').select('path, value');
-    if (!data || !data.length) return null;
+    const topFolders = await listFolder('');
+    if (!topFolders.length) return null;
     const tree = {};
-    for (const row of data) {
-      const parts = row.path.split('/');
-      let cur = tree;
-      for (let i = 0; i < parts.length - 1; i++) {
-        if (!cur[parts[i]] || typeof cur[parts[i]] !== 'object') cur[parts[i]] = {};
-        cur = cur[parts[i]];
+    for (const item of topFolders) {
+      if (item.id === null) {
+        const children = await listFolder(item.name);
+        if (children.length) {
+          tree[item.name] = {};
+          for (const child of children) {
+            if (child.name.endsWith('.json')) {
+              const key = child.name.replace('.json', '');
+              tree[item.name][key] = await readFile(item.name + '/' + child.name);
+            }
+          }
+        }
+      } else if (item.name.endsWith('.json')) {
+        const key = item.name.replace('.json', '');
+        tree[key] = await readFile(item.name);
       }
-      cur[parts[parts.length - 1]] = row.value;
     }
-    return tree;
+    return Object.keys(tree).length ? tree : null;
   }
-
-  const { data: exact } = await supabase.from('rtdb').select('value').eq('path', p).maybeSingle();
-  if (exact) return exact.value;
 
   const parts = p.split('/');
+
   if (parts.length >= 2) {
     const rootPath = parts.slice(0, 2).join('/');
-    const { data: parentRow } = await supabase.from('rtdb').select('value').eq('path', rootPath).maybeSingle();
-    if (parentRow) {
+    const fp = filePath(rootPath);
+    const val = await readFile(fp);
+    if (val !== null) {
       const rest = parts.slice(2);
-      if (rest.length > 0) return getNestedValue(parentRow.value, rest);
-      return parentRow.value;
+      if (rest.length > 0) return getNestedValue(val, rest);
+      return val;
     }
   }
 
-  const prefix = p + '/';
-  const { data: children } = await supabase.from('rtdb').select('path, value').like('path', prefix + '%');
-  if (children && children.length) {
-    const result = {};
-    for (const row of children) {
-      const childKey = row.path.slice(prefix.length).split('/')[0];
-      if (row.path === prefix + childKey) {
-        result[childKey] = row.value;
-      } else if (!result[childKey]) {
-        result[childKey] = {};
+  if (parts.length === 1) {
+    const children = await listFolder(parts[0]);
+    if (children && children.length) {
+      const result = {};
+      for (const child of children) {
+        if (child.name.endsWith('.json')) {
+          const key = child.name.replace('.json', '');
+          result[key] = await readFile(parts[0] + '/' + child.name);
+        }
       }
+      return Object.keys(result).length ? result : null;
     }
-    return Object.keys(result).length ? result : null;
   }
 
   return null;
@@ -141,14 +162,14 @@ async function rtdbSet(rawPath, value) {
   const parts = p.split('/');
 
   if (parts.length <= 2) {
-    await supabase.from('rtdb').upsert({ path: p, value, updated_at: new Date().toISOString() }, { onConflict: 'path' });
+    await writeFile(filePath(p), value);
     return;
   }
 
   const rootPath = parts.slice(0, 2).join('/');
+  const fp = filePath(rootPath);
   const nestedKeys = parts.slice(2);
-  const { data: existing } = await supabase.from('rtdb').select('value').eq('path', rootPath).maybeSingle();
-  let obj = existing ? (existing.value || {}) : {};
+  let obj = await readFile(fp) || {};
 
   let cur = obj;
   for (let i = 0; i < nestedKeys.length - 1; i++) {
@@ -157,7 +178,7 @@ async function rtdbSet(rawPath, value) {
   }
   cur[nestedKeys[nestedKeys.length - 1]] = value;
 
-  await supabase.from('rtdb').upsert({ path: rootPath, value: obj, updated_at: new Date().toISOString() }, { onConflict: 'path' });
+  await writeFile(fp, obj);
 }
 
 async function rtdbUpdate(rawPath, updates) {
@@ -167,9 +188,9 @@ async function rtdbUpdate(rawPath, updates) {
 
   const rootPath = parts.length >= 2 ? parts.slice(0, 2).join('/') : p;
   const nestedPrefix = parts.length > 2 ? parts.slice(2) : [];
+  const fp = filePath(rootPath);
 
-  const { data: existing } = await supabase.from('rtdb').select('value').eq('path', rootPath).maybeSingle();
-  let obj = existing ? JSON.parse(JSON.stringify(existing.value || {})) : {};
+  let obj = await readFile(fp) || {};
 
   let target = obj;
   for (const k of nestedPrefix) {
@@ -190,7 +211,7 @@ async function rtdbUpdate(rawPath, updates) {
     cur[nestedPrefix[nestedPrefix.length - 1]] = merged;
   }
 
-  await supabase.from('rtdb').upsert({ path: rootPath, value: obj, updated_at: new Date().toISOString() }, { onConflict: 'path' });
+  await writeFile(fp, obj);
 }
 
 async function rtdbPush(rawPath, value) {
@@ -199,14 +220,14 @@ async function rtdbPush(rawPath, value) {
   const parts = p.split('/');
 
   if (parts.length === 1) {
-    await supabase.from('rtdb').upsert({ path: `${p}/${key}`, value, updated_at: new Date().toISOString() }, { onConflict: 'path' });
+    await writeFile(filePath(`${p}/${key}`), value);
     return key;
   }
 
   const rootPath = parts.slice(0, 2).join('/');
+  const fp = filePath(rootPath);
   const nestedKeys = [...parts.slice(2), key];
-  const { data: existing } = await supabase.from('rtdb').select('value').eq('path', rootPath).maybeSingle();
-  let obj = existing ? JSON.parse(JSON.stringify(existing.value || {})) : {};
+  let obj = await readFile(fp) || {};
 
   let cur = obj;
   for (let i = 0; i < nestedKeys.length - 1; i++) {
@@ -215,7 +236,7 @@ async function rtdbPush(rawPath, value) {
   }
   cur[nestedKeys[nestedKeys.length - 1]] = value;
 
-  await supabase.from('rtdb').upsert({ path: rootPath, value: obj, updated_at: new Date().toISOString() }, { onConflict: 'path' });
+  await writeFile(fp, obj);
   return key;
 }
 
@@ -225,17 +246,17 @@ async function rtdbRemove(rawPath) {
   const parts = p.split('/');
 
   if (parts.length <= 2) {
-    await supabase.from('rtdb').delete().eq('path', p);
-    await supabase.from('rtdb').delete().like('path', p + '/%');
+    await deleteFile(filePath(p));
     return;
   }
 
   const rootPath = parts.slice(0, 2).join('/');
+  const fp = filePath(rootPath);
   const nestedKeys = parts.slice(2);
-  const { data: existing } = await supabase.from('rtdb').select('value').eq('path', rootPath).maybeSingle();
-  if (!existing) return;
+  let obj = await readFile(fp);
+  if (!obj) return;
 
-  let obj = JSON.parse(JSON.stringify(existing.value || {}));
+  obj = JSON.parse(JSON.stringify(obj));
   let cur = obj;
   for (let i = 0; i < nestedKeys.length - 1; i++) {
     if (!cur[nestedKeys[i]]) return;
@@ -243,7 +264,7 @@ async function rtdbRemove(rawPath) {
   }
   delete cur[nestedKeys[nestedKeys.length - 1]];
 
-  await supabase.from('rtdb').upsert({ path: rootPath, value: obj, updated_at: new Date().toISOString() }, { onConflict: 'path' });
+  await writeFile(fp, obj);
 }
 
 // ── Firebase-compatible data API ────────────────────────────
@@ -376,34 +397,46 @@ app.get('/api/settings/:key.json', async (req, res) => {
   }
 });
 
-// ── Setup endpoint ──────────────────────────────────────────
+// ── Init endpoint (creates table + seeds) ──────────────────
+
+app.post('/api/init', async (req, res) => {
+  try {
+    const { Client } = require('pg');
+    const dbUrl = process.env.DATABASE_URL || 'postgresql://postgres:3v,a,yHP$92+wEf@db.vbwelshassobsoxldztz.supabase.co:5432/postgres';
+    const client = new Client({ connectionString: dbUrl, ssl: { rejectUnauthorized: false } });
+    await client.connect();
+    await client.query(`CREATE TABLE IF NOT EXISTS rtdb (path TEXT PRIMARY KEY, value JSONB DEFAULT '{}', updated_at TIMESTAMPTZ DEFAULT NOW());`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_rtdb_path_prefix ON rtdb USING btree (path text_pattern_ops);`);
+    await client.end();
+
+    const seeds = [
+      { path: 'dashboardUsers/jafar@admin,com', value: { email: 'jafar@admin.com', password: '112233', role: 'admin', status: 'active', createdAt: new Date().toISOString() } },
+      { path: 'dashboardUsers/eng@admin,com', value: { email: 'eng@admin.com', password: 'eng6969', role: 'superadmin', status: 'active', createdAt: new Date().toISOString() } },
+      { path: 'dashboardUsers/superadmin@admin,com', value: { email: 'superadmin@admin.com', password: 'superadmin12345', role: 'superadmin', status: 'active', createdAt: new Date().toISOString() } },
+      { path: 'settings/geoBlocking', value: { enabled: true, allowedCountries: ['EG'] } }
+    ];
+    for (const s of seeds) {
+      await supabase.from('rtdb').upsert({ path: s.path, value: s.value, updated_at: new Date().toISOString() }, { onConflict: 'path' });
+    }
+    res.json({ ok: true, table: 'created', seeded: seeds.length });
+  } catch (e) {
+    console.error('init error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.post('/api/setup', async (req, res) => {
   try {
-    const adminUsers = [
-      {
-        path: 'dashboardUsers/jafar@admin,com',
-        value: { email: 'jafar@admin.com', password: '112233', role: 'admin', status: 'active', createdAt: new Date().toISOString() }
-      },
-      {
-        path: 'dashboardUsers/eng@admin,com',
-        value: { email: 'eng@admin.com', password: 'eng6969', role: 'superadmin', status: 'active', createdAt: new Date().toISOString() }
-      },
-      {
-        path: 'dashboardUsers/superadmin@admin,com',
-        value: { email: 'superadmin@admin.com', password: 'superadmin12345', role: 'superadmin', status: 'active', createdAt: new Date().toISOString() }
-      },
-      {
-        path: 'settings/geoBlocking',
-        value: { enabled: true, allowedCountries: ['EG'] }
-      }
+    const seeds = [
+      { path: 'dashboardUsers/jafar@admin,com', value: { email: 'jafar@admin.com', password: '112233', role: 'admin', status: 'active', createdAt: new Date().toISOString() } },
+      { path: 'dashboardUsers/eng@admin,com', value: { email: 'eng@admin.com', password: 'eng6969', role: 'superadmin', status: 'active', createdAt: new Date().toISOString() } },
+      { path: 'dashboardUsers/superadmin@admin,com', value: { email: 'superadmin@admin.com', password: 'superadmin12345', role: 'superadmin', status: 'active', createdAt: new Date().toISOString() } },
+      { path: 'settings/geoBlocking', value: { enabled: true, allowedCountries: ['EG'] } }
     ];
-
-    for (const row of adminUsers) {
-      await supabase.from('rtdb').upsert({ path: row.path, value: row.value, updated_at: new Date().toISOString() }, { onConflict: 'path' });
+    for (const s of seeds) {
+      await supabase.from('rtdb').upsert({ path: s.path, value: s.value, updated_at: new Date().toISOString() }, { onConflict: 'path' });
     }
-
-    res.json({ ok: true, seeded: adminUsers.length });
+    res.json({ ok: true, seeded: seeds.length });
   } catch (e) {
     console.error('setup error:', e.message);
     res.status(500).json({ error: e.message });
