@@ -18,6 +18,7 @@
   ],
   "routes": [
     { "src": "/api/(.*)", "dest": "/api/index.js" },
+    { "src": "/settings/(.*)", "dest": "/api/index.js" },
     { "src": "/_nuxt/(.*)", "dest": "/_nuxt/$1" },
     { "src": "/assets/(.*)", "dest": "/assets/$1" },
     { "src": "/favicon.png", "dest": "/favicon.png" },

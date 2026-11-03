@@ -597,12 +597,23 @@ app.get('/api/auth/state', (req, res) => {
 
 // ── Settings API (for geo-blocking) ─────────────────────────
 
-app.get('/api/settings/:key.json', async (req, res) => {
+app.get(['/api/settings/:key.json', '/settings/:key.json'], async (req, res) => {
   try {
     const { data, error } = await supabase.from('settings').select('value').eq('key', req.params.key).single();
     res.json(data?.value || null);
   } catch (e) {
     res.json(null);
+  }
+});
+
+app.put(['/api/settings/:key.json', '/settings/:key.json'], async (req, res) => {
+  try {
+    const key = req.params.key;
+    const value = req.body;
+    await supabase.from('settings').upsert({ key, value }, { onConflict: 'key' });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
