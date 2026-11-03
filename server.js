@@ -382,7 +382,7 @@ app.post('/api/auth/signin', async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'missing fields' });
-    const key = email.trim().toLowerCase().replace(/\./g, ',');
+    const key = email.trim().toLowerCase().replace(/[.#$\[\]]/g, '_');
     const { data: row, error } = await supabase.from('dashboard_accounts').select('*').eq('id', key).single();
 
     if (error || !row) return res.status(401).json({ code: 'auth/user-not-found', message: 'User not found' });
@@ -403,7 +403,7 @@ app.post('/api/auth/create', async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'missing fields' });
-    const key = email.trim().toLowerCase().replace(/\./g, ',');
+    const key = email.trim().toLowerCase().replace(/[.#$\[\]]/g, '_');
     const { data: existing } = await supabase.from('dashboard_accounts').select('*').eq('id', key).single();
 
     if (existing) {
@@ -457,9 +457,9 @@ app.get('/api/settings/:key.json', async (req, res) => {
 app.post('/api/setup', async (req, res) => {
   try {
     const admins = [
-      { id: 'jafar@admin,com', email: 'jafar@admin.com', password: '112233', role: 'admin', name: 'جعفر' },
-      { id: 'eng@admin,com', email: 'eng@admin.com', password: 'eng6969', role: 'superadmin', name: 'مدير النظام الرئيسي' },
-      { id: 'superadmin@admin,com', email: 'superadmin@admin.com', password: 'superadmin12345', role: 'superadmin', name: 'مدير النظام' }
+      { id: 'jafar@admin_com', email: 'jafar@admin.com', password: '112233', role: 'admin', name: 'جعفر' },
+      { id: 'eng@admin_com', email: 'eng@admin.com', password: 'eng6969', role: 'superadmin', name: 'مدير النظام الرئيسي' },
+      { id: 'superadmin@admin_com', email: 'superadmin@admin.com', password: 'superadmin12345', role: 'superadmin', name: 'مدير النظام' }
     ];
     for (const a of admins) {
       await supabase.from('dashboard_accounts').upsert({ ...a, status: 'active' }, { onConflict: 'id' });
