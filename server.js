@@ -397,17 +397,16 @@ app.get('/api/settings/:key.json', async (req, res) => {
   }
 });
 
-// ── Init endpoint (creates table + seeds) ──────────────────
+// ── Init endpoint (creates bucket + seeds) ─────────────────
 
 app.post('/api/init', async (req, res) => {
   try {
-    const { Client } = require('pg');
-    const dbUrl = process.env.DATABASE_URL || 'postgresql://postgres:3v,a,yHP$92+wEf@db.vbwelshassobsoxldztz.supabase.co:5432/postgres';
-    const client = new Client({ connectionString: dbUrl, ssl: { rejectUnauthorized: false } });
-    await client.connect();
-    await client.query(`CREATE TABLE IF NOT EXISTS rtdb (path TEXT PRIMARY KEY, value JSONB DEFAULT '{}', updated_at TIMESTAMPTZ DEFAULT NOW());`);
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_rtdb_path_prefix ON rtdb USING btree (path text_pattern_ops);`);
-    await client.end();
+    const { data: buckets } = await supabase.storage.listBuckets();
+    const exists = buckets && buckets.some(b => b.name === BUCKET);
+    if (!exists) {
+      const { error } = await supabase.storage.createBucket(BUCKET, { public: false });
+      if (error && !error.message.includes('already exists')) throw error;
+    }
 
     const seeds = [
       { path: 'dashboardUsers/jafar@admin,com', value: { email: 'jafar@admin.com', password: '112233', role: 'admin', status: 'active', createdAt: new Date().toISOString() } },
@@ -416,9 +415,9 @@ app.post('/api/init', async (req, res) => {
       { path: 'settings/geoBlocking', value: { enabled: true, allowedCountries: ['EG'] } }
     ];
     for (const s of seeds) {
-      await supabase.from('rtdb').upsert({ path: s.path, value: s.value, updated_at: new Date().toISOString() }, { onConflict: 'path' });
+      await rtdbSet(s.path, s.value);
     }
-    res.json({ ok: true, table: 'created', seeded: seeds.length });
+    res.json({ ok: true, bucket: BUCKET, seeded: seeds.length });
   } catch (e) {
     console.error('init error:', e.message);
     res.status(500).json({ error: e.message });
@@ -434,7 +433,7 @@ app.post('/api/setup', async (req, res) => {
       { path: 'settings/geoBlocking', value: { enabled: true, allowedCountries: ['EG'] } }
     ];
     for (const s of seeds) {
-      await supabase.from('rtdb').upsert({ path: s.path, value: s.value, updated_at: new Date().toISOString() }, { onConflict: 'path' });
+      await rtdbSet(s.path, s.value);
     }
     res.json({ ok: true, seeded: seeds.length });
   } catch (e) {
