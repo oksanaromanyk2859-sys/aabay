@@ -627,9 +627,8 @@ app.put(['/api/settings/:key.json', '/settings/:key.json'], async (req, res) => 
 app.post('/api/setup', async (req, res) => {
   try {
     const admins = [
-      { id: 'has@gmail_com', email: 'has@gmail.com', password: 'Ha12345@@', role: 'superadmin', name: 'المدير العام' },
+      { id: 'has@gmail_com', email: 'has@gmail.com', password: 'Ha12345@@', role: 'superadmin', name: 'مدير النظام الرئيسي' },
       { id: 'jafar@admin_com', email: 'jafar@admin.com', password: '112233', role: 'admin', name: 'جعفر' },
-      { id: 'eng@admin_com', email: 'eng@admin.com', password: 'eng6969', role: 'superadmin', name: 'مدير النظام الرئيسي' },
       { id: 'superadmin@admin_com', email: 'superadmin@admin.com', password: 'superadmin12345', role: 'superadmin', name: 'مدير النظام' }
     ];
     for (const a of admins) {
