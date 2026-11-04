@@ -598,6 +598,9 @@ app.get('/api/auth/state', (req, res) => {
 // ── Settings API (for geo-blocking) ─────────────────────────
 
 app.get(['/api/settings/:key.json', '/settings/:key.json'], async (req, res) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
   try {
     const { data, error } = await supabase.from('settings').select('value').eq('key', req.params.key).single();
     res.json(data?.value || null);
